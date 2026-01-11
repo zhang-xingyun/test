@@ -41,6 +41,13 @@ var dataTypeSuggestions = []prompt.Suggest{
 	{Text: "json_ietf", Description: "JSON_IETF encoded string (RFC7951)"},
 }
 
+// 订阅类型建议列表
+var subscriptionTypeSuggestions = []prompt.Suggest{
+	{Text: "sample", Description: "Default subscription key"},
+	{Text: "on_change", Description: "Stream subscription"},
+	{Text: "once", Description: "One-time subscription"},
+}
+
 func printSchemaTree(entry *yang.Entry, indent string) {
 	fmt.Printf("%s%s (%s)\n", indent, entry.Name, entry.Kind.String())
 	for _, child := range entry.Dir {
@@ -84,8 +91,12 @@ func generateYangSchema(file string) error {
 	}
 	sort.Strings(names)
 	entries := make([]*yang.Entry, len(names))
+	var mod *yang.Entry
 	for x, n := range names {
-		entries[x] = yang.ToEntry(mods[n])
+		mod = yang.ToEntry(mods[n])
+		for name := range mod.Dir {
+			entries[x] = mod.Dir[name]
+		}
 	}
 
 	SchemaTree = buildRootEntry()
@@ -449,6 +460,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 	}
 
 	fields := strings.Fields(textBeforeCursor)
+	allFields := strings.Split(textBeforeCursor, " ")
 	if len(fields) == 0 {
 		return prompt.FilterHasPrefix(commands, d.GetWordBeforeCursor(), true)
 	}
@@ -463,7 +475,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 		case "set":
 			return prompt.FilterHasPrefix(dataTypeSuggestions, "", true)
 		case "sub":
-			return []prompt.Suggest{{Text: "sample", Description: "Default subscription key"}}
+			return prompt.FilterHasPrefix(subscriptionTypeSuggestions, "", true)
 		case "path":
 			// 对于path命令，可以提供根路径建议
 			return buildXPathSuggestions("")
@@ -491,6 +503,9 @@ func completer(d prompt.Document) []prompt.Suggest {
 		}
 		return buildXPathSuggestions("")
 	case "set":
+		if len(allFields) >= 3 {
+			return []prompt.Suggest{}
+		}
 		if len(fields) == 2 {
 			// 正在输入数据类型
 			return prompt.FilterHasPrefix(dataTypeSuggestions, lastWord, true)
@@ -503,13 +518,12 @@ func completer(d prompt.Document) []prompt.Suggest {
 		}
 		return []prompt.Suggest{}
 	case "sub":
+		if len(allFields) >= 3 {
+			return []prompt.Suggest{}
+		}
 		if len(fields) == 2 {
 			// 输入sub命令后的参数
-			return prompt.FilterHasPrefix([]prompt.Suggest{
-				{Text: "sample", Description: "Default subscription key"},
-				{Text: "on_change", Description: "Stream subscription"},
-				{Text: "once", Description: "One-time subscription"},
-			}, lastWord, true)
+			return prompt.FilterHasPrefix(subscriptionTypeSuggestions, lastWord, true)
 		}
 		return []prompt.Suggest{}
 	default:
