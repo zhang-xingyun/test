@@ -13,6 +13,27 @@ import (
 
 var path string = "/"
 
+// 全局信号处理变量
+var (
+	sigChan   = make(chan os.Signal, 1)
+	doneChan  = make(chan bool, 1)
+)
+
+// 初始化信号处理
+func init() {
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+
+	// 启动一个goroutine来处理全局信号
+	go func() {
+		sig := <-sigChan
+		fmt.Printf("\nReceived signal: %s, shutting down gracefully...\n", sig.String())
+
+		// 通知所有正在运行的操作停止
+		doneChan <- true
+		os.Exit(0)
+	}()
+}
+
 // 模拟YANG模块的结构
 type YangNode struct {
 	Name        string
@@ -358,5 +379,29 @@ func main() {
 		prompt.OptionTitle("gNMI CLI"),
 		prompt.OptionPrefix("gNMI> "),
 		prompt.OptionHistory([]string{"help", "get", "path"}),
+		prompt.OptionAddKeyBind(
+			prompt.KeyBind{
+				Key: prompt.ControlZ,
+				Fn: func(buf *prompt.Buffer) {
+					// If the last word before the cursor does not contain a "/" return.
+					// This is needed to avoid deleting down to a previous flag value
+					if !strings.Contains(buf.Document().GetWordBeforeCursorWithSpace(), "/") {
+						return
+					}
+					// Check if the last rune is a PathSeparator and is not the path root then delete it
+					if buf.Document().GetCharRelativeToCursor(0) == os.PathSeparator && buf.Document().GetCharRelativeToCursor(-1) != ' ' {
+						buf.DeleteBeforeCursor(1)
+					}
+					// Delete down until the next "/"
+					buf.DeleteBeforeCursor(len([]rune(buf.Document().GetWordBeforeCursorUntilSeparator("/"))))
+				},
+			},
+			prompt.KeyBind{
+				Key: prompt.ControlC,
+				Fn: func(buf *prompt.Buffer) {
+
+				},
+			},
+		),
 	).Run()
 }
