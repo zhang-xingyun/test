@@ -15,11 +15,21 @@ var path string = "/"
 
 // 支持的命令列表
 var commands = []prompt.Suggest{
-	{Text: "help", Description: "Display help"},
-	{Text: "get", Description: "Get a key"},
-	{Text: "set", Description: "Set a key-value pair"},
-	{Text: "sub", Description: "Subscribe to a key"},
+	{Text: "help", Description: "Display help information"},
+	{Text: "get", Description: "Execute gNMI GetRequest"},
+	{Text: "path", Description: "Set gNMI path"},
+	{Text: "set", Description: "Execute gNMI SetRequest"},
+	{Text: "sub", Description: "Execute gNMI SubscribeRequest"},
 	{Text: "quit", Description: "Quit the application"},
+}
+
+// 数据类型建议列表
+var dataTypeSuggestions = []prompt.Suggest{
+	{Text: "json", Description: "JSON encoded string (RFC7159)"},
+	{Text: "bytes", Description: "Byte sequence whose semantics is opaque to the protocol"},
+	{Text: "proto", Description: "Serialised protobuf message using protobuf.Any"},
+	{Text: "ascii", Description: "ASCII encoded string representing text formatted according to a target-defined convention"},
+	{Text: "json_ietf", Description: "JSON_IETF encoded string (RFC7951)"},
 }
 
 // 执行用户输入的命令
@@ -35,7 +45,7 @@ func executor(in string) {
 	switch cmd {
 	case "quit":
 		fmt.Println("Goodbye!")
-		return
+		os.Exit(0)
 	case "path":
 		if len(args) > 1 {
 			path = args[1]
@@ -44,35 +54,60 @@ func executor(in string) {
 			fmt.Println("Current path:", path)
 		}
 	case "help":
-		fmt.Println("Available commands: help, get, set, sub, quit")
+		fmt.Println("Available gNMI commands:")
+		fmt.Println("- help: Display help information")
+		fmt.Println("- get: Execute gNMI GetRequest for current path")
+		fmt.Println("- set <type> <value>: Execute gNMI SetRequest with specified data type and value")
+		fmt.Println("- sub [key]: Execute gNMI SubscribeRequest, default key is 'sample'")
+		fmt.Println("- path: Show or set gNMI path")
+		fmt.Println("- quit: Quit the application")
 	case "get":
-		if len(args) > 1 {
-			fmt.Printf("Getting key: %s\n", args[1])
-		} else {
-			fmt.Println("Usage: get <key>")
-		}
+		fmt.Printf("Executing gNMI GetRequest for path: %s\n", path)
 	case "set":
-		if len(args) > 2 {
-			fmt.Printf("Setting %s = %s\n", args[1], args[2])
+		if len(args) >= 3 {
+			dataType := args[1]
+			value := args[2]
+			fmt.Printf("Executing gNMI SetRequest - Path: %s, Type: %s, Value: %s\n", path, dataType, value)
 		} else {
-			fmt.Println("Usage: set <key> <value>")
+			fmt.Println("Usage: set <type> <value>")
+			fmt.Println("Supported types: json, bytes, proto, ascii, json_ietf")
 		}
 	case "sub":
+		var subKey string
 		if len(args) > 1 {
-			for {
-				time.Sleep(1 * time.Second)
-				fmt.Println("subscribe key: %s\n", args[1])
-
-				c := make(chan os.Signal)
-				signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-
-				sig := <-c
-				fmt.Println("Received signal: %s", sig)
-				break
-			}
+			subKey = args[1]
 		} else {
-			fmt.Println("Usage: sub <key>")
+			subKey = "sample"
 		}
+
+		// 创建一个信号通道用于接收中断信号
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+
+		// 启动一个goroutine来处理订阅逻辑
+		doneChan := make(chan bool, 1)
+
+		go func() {
+			for {
+				// 检查是否有退出信号
+				select {
+				case <-doneChan:
+					return
+				default:
+					// 模拟订阅操作
+					fmt.Printf("Executing gNMI SubscribeRequest for key: %s, path: %s, waiting for updates...\n", subKey, path)
+					time.Sleep(2 * time.Second) // 模拟等待消息
+				}
+			}
+		}()
+
+		// 等待系统信号
+		sig := <-sigChan
+		fmt.Printf("\nReceived signal: %s, exiting subscription...\n", sig.String())
+
+		// 发送完成信号，退出goroutine
+		doneChan <- true
+
 	default:
 		fmt.Printf("Unknown command: %s. Type 'help' for available commands.\n", cmd)
 	}
@@ -81,32 +116,72 @@ func executor(in string) {
 // 提供自动补全建议
 func completer(d prompt.Document) []prompt.Suggest {
 	w := d.GetWordBeforeCursor()
-	if w == "" {
-		// 补全顶级命令
+
+	// 根据第一个词提供不同的补全
+	fields := strings.Fields(d.TextBeforeCursor())
+
+	// 获取完整输入并分割，但保留最后一个空格输入
+	textBeforeCursor := d.TextBeforeCursor()
+	allFields := strings.Split(textBeforeCursor, " ")
+
+	if len(fields) == 0 {
+		// 没有任何输入时，显示命令补全
 		return prompt.FilterHasPrefix(commands, w, true)
 	}
 
-	// 根据第一个词提供不同的补全
-	first := strings.ToLower(strings.Fields(d.TextBeforeCursor())[0])
+	first := strings.ToLower(fields[0])
 	switch first {
-	case "get", "set", "sub":
-		// 这里可以扩展参数补全逻辑
-		break
+	case "get", "quit", "help":
+		// 这些命令没有参数
+		return []prompt.Suggest{}
+	case "path":
+		// 可选参数
+		return []prompt.Suggest{}
+	case "set":
+		// 如果输入超过3个字段（命令+2个参数），说明已经在第三个参数之后输入了空格，不应再提示类型
+		if len(fields) >= 3 {
+			return []prompt.Suggest{}
+		}
+		// 检查是否刚输入set并按下了空格，或者正在输入第一个参数（数据类型）
+		if len(allFields) == 2 && allFields[0] == "set" { // 刚输入set + 空格，等待数据类型
+			// 在这种情况下，w 是空的，所以我们要显示所有数据类型
+			return prompt.FilterHasPrefix(dataTypeSuggestions, w, true)
+		} else if len(fields) == 2 && fields[0] == "set" { // 已经输入set和数据类型，正在输入值
+			// 不再显示数据类型提示，因为用户应该输入值
+			return []prompt.Suggest{}
+		} else if len(fields) == 1 { // 只输入了set，还没按空格
+			return prompt.FilterHasPrefix(dataTypeSuggestions, w, true)
+		}
+		return []prompt.Suggest{}
+	case "sub":
+		// 如果输入超过2个字段（命令+1个参数），说明已经在第二个参数之后输入了空格，不应再提示
+		if len(allFields) >= 3 {
+			return []prompt.Suggest{}
+		}
+		// 检查是否刚输入sub并按下了空格
+		if len(allFields) == 2 && allFields[0] == "sub" && allFields[1] == "" {
+			return prompt.FilterHasPrefix([]prompt.Suggest{{Text: "sample", Description: "Default subscription key"}}, w, true)
+		}
+		// 为sub命令提供补全
+		if len(fields) == 2 {
+			return prompt.FilterHasPrefix([]prompt.Suggest{{Text: "sample", Description: "Default subscription key"}}, w, true)
+		}
+		return []prompt.Suggest{}
+	default:
+		// 如果不是已知命令，仍然提供基本命令补全
+		return prompt.FilterHasPrefix(commands, w, true)
 	}
-
-	// 简单上下文补全（这里只做命令补全，不深入参数）
-	return prompt.FilterHasPrefix(commands, w, true)
 }
 
 func main() {
-	fmt.Println("Welcome to MyPrompt! Type 'help' or 'quit'")
+	fmt.Println("Welcome to gNMI CLI! Type 'help' or 'quit'")
 
 	p := prompt.New(
 		executor,
 		completer,
-		prompt.OptionTitle("MyPrompt"),
-		prompt.OptionPrefix(">>> "),
-		prompt.OptionHistory([]string{"help", "get name"}),
+		prompt.OptionTitle("gNMI CLI"),
+		prompt.OptionPrefix("gNMI> "),
+		prompt.OptionHistory([]string{"help", "get", "path"}),
 	)
 
 	p.Run()
