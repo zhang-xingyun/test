@@ -15,6 +15,7 @@ var path string = "/"
 // 全局订阅控制变量
 var (
 	subscribeCancel chan bool
+	isSubscribing   bool
 )
 
 // 模拟YANG模块的结构
@@ -207,6 +208,7 @@ func stopSubscription() {
 		subscribeCancel <- true
 		close(subscribeCancel)
 		subscribeCancel = nil
+		isSubscribing = false
 	}
 }
 
@@ -241,6 +243,7 @@ func executor(in string) {
 
 	switch cmd {
 	case "quit":
+		stopSubscription()
 		fmt.Println("Goodbye!")
 		resetTerminal()
 		os.Exit(0)
@@ -271,6 +274,9 @@ func executor(in string) {
 			fmt.Println("Supported types: json, bytes, proto, ascii, json_ietf")
 		}
 	case "sub":
+		// 停止之前的订阅
+		stopSubscription()
+
 		var subKey string
 		if len(args) > 1 {
 			subKey = args[1]
@@ -280,11 +286,12 @@ func executor(in string) {
 
 		// 创建新的取消通道
 		subscribeCancel = make(chan bool, 1)
+		isSubscribing = true
 
-		// 启动订阅（在后台运行）
-		runSubscription(subKey)
+		// 在goroutine中启动订阅，避免阻塞executor
+		go runSubscription(subKey)
 
-		fmt.Printf("Subscription started with key: %s\n", subKey)
+		fmt.Printf("Subscription started with key: %s (press Ctrl+C to stop)\n", subKey)
 
 	default:
 		fmt.Printf("Unknown command: %s. Type 'help' for available commands.\n", cmd)
@@ -408,8 +415,7 @@ func main() {
 				Key: prompt.ControlC,
 				Fn: func(buf *prompt.Buffer) {
 					// 检查是否有活跃的订阅
-					fmt.Println("ctrl+c pressed")
-					if subscribeCancel != nil {
+					if isSubscribing && subscribeCancel != nil {
 						stopSubscription()
 						fmt.Println("\nSubscription canceled...")
 					} else {
