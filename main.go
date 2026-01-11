@@ -417,9 +417,9 @@ func main() {
 					// 检查是否有活跃的订阅
 					if isSubscribing && subscribeCancel != nil {
 						stopSubscription()
-						fmt.Println("\nSubscription canceled...")
+						fmt.Println("Subscription canceled...")
 					} else {
-						fmt.Println("\nExiting...")
+						fmt.Println("Exiting...")
 						resetTerminal()
 						os.Exit(0)
 					}
