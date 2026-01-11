@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -309,11 +309,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 		return []prompt.Suggest{}
 	case "path":
 		// 如果path命令后面有输入，则提供XPath建议
-		if len(fields) == 1 && w == "" {
-			// 用户只输入了"path"，还没有输入空格
-			return prompt.FilterHasPrefix(commands, w, true)
-		} else if len(fields) >= 1 {
-			// 用户已经开始输入路径，提供基于YANG模块的建议
+		if len(fields) >= 1 {
 			return buildXPathSuggestions(w)
 		}
 		return []prompt.Suggest{}
