@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/c-bata/go-prompt"
@@ -15,24 +13,9 @@ var path string = "/"
 
 // 全局信号处理变量
 var (
-	sigChan   = make(chan os.Signal, 1)
-	doneChan  = make(chan bool, 1)
+	isSubscribing bool
+	doneChan      chan bool
 )
-
-// 初始化信号处理
-func init() {
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-
-	// 启动一个goroutine来处理全局信号
-	go func() {
-		sig := <-sigChan
-		fmt.Printf("\nReceived signal: %s, shutting down gracefully...\n", sig.String())
-
-		// 通知所有正在运行的操作停止
-		doneChan <- true
-		os.Exit(0)
-	}()
-}
 
 // 模拟YANG模块的结构
 type YangNode struct {
@@ -274,33 +257,21 @@ func executor(in string) {
 			subKey = "sample"
 		}
 
-		// 创建一个信号通道用于接收中断信号
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-
-		// 启动一个goroutine来处理订阅逻辑
-		doneChan := make(chan bool, 1)
+		doneChan = make(chan bool, 1)
+		isSubscribing = true
 
 		go func() {
 			for {
-				// 检查是否有退出信号
 				select {
 				case <-doneChan:
+					isSubscribing = false
 					return
-				default:
-					// 模拟订阅操作
+				case <-time.After(2 * time.Second):
 					fmt.Printf("Executing gNMI SubscribeRequest for key: %s, path: %s, waiting for updates...\n", subKey, path)
-					time.Sleep(2 * time.Second) // 模拟等待消息
+					// 这里可以添加实际的订阅逻辑
 				}
 			}
 		}()
-
-		// 等待系统信号
-		sig := <-sigChan
-		fmt.Printf("\nReceived signal: %s, exiting subscription...\n", sig.String())
-
-		// 发送完成信号，退出goroutine
-		doneChan <- true
 
 	default:
 		fmt.Printf("Unknown command: %s. Type 'help' for available commands.\n", cmd)
@@ -399,7 +370,13 @@ func main() {
 			prompt.KeyBind{
 				Key: prompt.ControlC,
 				Fn: func(buf *prompt.Buffer) {
-
+					if isSubscribing {
+						doneChan <- true
+						fmt.Println("Subscription canceled...")
+					} else {
+						fmt.Println("Exiting...")
+						os.Exit(0)
+					}
 				},
 			},
 		),
