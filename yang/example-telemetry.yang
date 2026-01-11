@@ -1,5 +1,5 @@
 module example-telemetry {
-  yang-version 1.1;
+  yang-version 1;
   namespace "http://example.com/yang/telemetry";
   prefix "telem";
 
