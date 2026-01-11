@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -121,6 +122,13 @@ var dataTypeSuggestions = []prompt.Suggest{
 	{Text: "json_ietf", Description: "JSON_IETF encoded string (RFC7951)"},
 }
 
+func resetTerminal() {
+	var cmd *exec.Cmd
+	cmd = exec.Command("reset")
+	cmd.Stdout = os.Stdout
+	_ = cmd.Run() // 忽略错误，以防命令失败
+}
+
 // 从YANG模块结构中构建XPath建议
 func buildXPathSuggestions(input string) []prompt.Suggest {
 	var suggestions []prompt.Suggest
@@ -234,6 +242,7 @@ func executor(in string) {
 	switch cmd {
 	case "quit":
 		fmt.Println("Goodbye!")
+		resetTerminal()
 		os.Exit(0)
 	case "path":
 		if len(args) > 1 {
@@ -405,6 +414,7 @@ func main() {
 						fmt.Println("\nSubscription canceled...")
 					} else {
 						fmt.Println("\nExiting...")
+						resetTerminal()
 						os.Exit(0)
 					}
 				},
