@@ -1,0 +1,103 @@
+module example-telemetry {
+  yang-version 1.1;
+  namespace "http://example.com/yang/telemetry";
+  prefix "telem";
+
+  organization "Example Inc.";
+  contact "support@example.com";
+  description
+    "A simple self-contained telemetry YANG model for demo.";
+
+  revision "2026-01-11" {
+    description "Initial revision";
+  }
+
+  container telemetry {
+    config false; // 遥测数据通常是只读的
+
+    container system {
+      description "System-level telemetry";
+
+      leaf uptime {
+        type uint64;
+        units "seconds";
+        description "System uptime since last reboot";
+      }
+
+      leaf cpu-utilization {
+        type decimal64 {
+          fraction-digits 2;
+        }
+        units "percent";
+        description "Average CPU utilization over last 1 minute";
+      }
+    }
+
+    container sensors {
+      description "Hardware sensor readings";
+
+      container cpu {
+        description "CPU temperature sensors";
+
+        leaf temperature {
+          type int32;
+          units "Celsius";
+          description "Current CPU die temperature";
+        }
+
+        leaf max-temperature {
+          type int32;
+          units "Celsius";
+          description "Maximum recorded CPU temperature";
+        }
+      }
+
+      container memory {
+        description "Memory usage metrics";
+
+        leaf used-percent {
+          type decimal64 {
+            fraction-digits 1;
+          }
+          units "percent";
+          description "Percentage of memory in use";
+        }
+
+        leaf total-memory {
+          type uint64;
+          units "MB";
+          description "Total physical memory";
+        }
+      }
+    }
+
+    container interfaces {
+      description "Per-interface telemetry";
+
+      list interface {
+        key "name";
+        description "Telemetry for a specific interface";
+
+        leaf name {
+          type string;
+          description "Interface name, e.g., 'eth0'";
+        }
+
+        leaf in-packets {
+          type uint64;
+          description "Number of inbound packets";
+        }
+
+        leaf out-packets {
+          type uint64;
+          description "Number of outbound packets";
+        }
+
+        leaf in-errors {
+          type uint32;
+          description "Inbound error count";
+        }
+      }
+    }
+  }
+}

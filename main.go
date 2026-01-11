@@ -4,105 +4,23 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/c-bata/go-prompt"
+	"github.com/openconfig/goyang/pkg/yang"
 )
 
 var path string = "/"
+var modules = yang.NewModules()
+var SchemaTree *yang.Entry
 
 // 全局订阅控制变量
 var (
 	subscribeCancel chan bool
 	isSubscribing   bool
 )
-
-// 模拟YANG模块的结构
-type YangNode struct {
-	Name        string
-	Description string
-	Type        string
-	Children    map[string]*YangNode
-}
-
-// 预定义的YANG模块结构
-var yangModules = map[string]*YangNode{
-	"test-module": {
-		Name:        "test-module",
-		Description: "Test YANG module for demonstration",
-		Children: map[string]*YangNode{
-			"interfaces": {
-				Name:        "interfaces",
-				Description: "Network interfaces container",
-				Children: map[string]*YangNode{
-					"interface": {
-						Name:        "interface",
-						Description: "List of interfaces",
-						Type:        "list",
-						Children: map[string]*YangNode{
-							"name": {
-								Name:        "name",
-								Description: "Interface name",
-								Type:        "string",
-							},
-							"enabled": {
-								Name:        "enabled",
-								Description: "Interface enable status",
-								Type:        "boolean",
-							},
-						},
-					},
-				},
-			},
-			"system": {
-				Name:        "system",
-				Description: "System container",
-				Children: map[string]*YangNode{
-					"hostname": {
-						Name:        "hostname",
-						Description: "Device hostname",
-						Type:        "string",
-					},
-					"servers": {
-						Name:        "servers",
-						Description: "List of servers",
-						Type:        "leaf-list",
-					},
-				},
-			},
-			"routing": {
-				Name:        "routing",
-				Description: "Routing configuration",
-				Children: map[string]*YangNode{
-					"static-routes": {
-						Name:        "static-routes",
-						Description: "Static routing table",
-						Children: map[string]*YangNode{
-							"route": {
-								Name:        "route",
-								Description: "A static route",
-								Type:        "list",
-								Children: map[string]*YangNode{
-									"destination": {
-										Name:        "destination",
-										Description: "Route destination",
-										Type:        "string",
-									},
-									"next-hop": {
-										Name:        "next-hop",
-										Description: "Next hop address",
-										Type:        "string",
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	},
-}
 
 // 支持的命令列表
 var commands = []prompt.Suggest{
@@ -123,83 +41,217 @@ var dataTypeSuggestions = []prompt.Suggest{
 	{Text: "json_ietf", Description: "JSON_IETF encoded string (RFC7951)"},
 }
 
+func init() {
+	generateYangSchema("yang/example-telemetry.yang")
+}
+
+func generateYangSchema(file string) error {
+	if file == "" {
+		return nil
+	}
+
+	if err := modules.Read(file); err != nil {
+		return err
+	}
+
+	if errors := modules.Process(); len(errors) > 0 {
+		for _, e := range errors {
+			fmt.Fprintf(os.Stderr, "yang processing error: %v\n", e)
+		}
+		return fmt.Errorf("yang processing failed with %d errors", len(errors))
+	}
+	// Keep track of the top level modules we read in.
+	// Those are the only modules we want to print below.
+	mods := map[string]*yang.Module{}
+	var names []string
+
+	for _, m := range modules.Modules {
+		if mods[m.Name] == nil {
+			mods[m.Name] = m
+			names = append(names, m.Name)
+		}
+	}
+	sort.Strings(names)
+	entries := make([]*yang.Entry, len(names))
+	for x, n := range names {
+		entries[x] = yang.ToEntry(mods[n])
+	}
+
+	SchemaTree = buildRootEntry()
+
+	for _, entry := range entries {
+		updateAnnotation(entry)
+		SchemaTree.Dir[entry.Name] = entry
+	}
+	return nil
+}
+
+func buildRootEntry() *yang.Entry {
+	return &yang.Entry{
+		Name: "root",
+		Kind: yang.DirectoryEntry,
+		Dir:  make(map[string]*yang.Entry),
+		Annotation: map[string]interface{}{
+			"schemapath": "/",
+			"root":       true,
+		},
+	}
+}
+
+// updateAnnotation updates the schema info before encoding.
+func updateAnnotation(entry *yang.Entry) {
+	for _, child := range entry.Dir {
+		updateAnnotation(child)
+		child.Annotation = map[string]interface{}{}
+		t := child.Type
+		if t == nil {
+			continue
+		}
+
+		switch t.Kind {
+		case yang.Ybits:
+			nameMap := t.Bit.NameMap()
+			bits := make([]string, 0, len(nameMap))
+			for bitstr := range nameMap {
+				bits = append(bits, bitstr)
+			}
+			child.Annotation["bits"] = bits
+		case yang.Yenum:
+			nameMap := t.Enum.NameMap()
+			enum := make([]string, 0, len(nameMap))
+			for enumstr := range nameMap {
+				enum = append(enum, enumstr)
+			}
+			child.Annotation["enum"] = enum
+		case yang.Yidentityref:
+			identities := make([]string, 0, len(t.IdentityBase.Values))
+			for i := range t.IdentityBase.Values {
+				identities = append(identities, t.IdentityBase.Values[i].PrefixedName())
+			}
+			child.Annotation["prefix-qualified-identities"] = identities
+		}
+		if t.Root != nil {
+			child.Annotation["root.type"] = t.Root.Name
+		}
+	}
+}
+
+func buildXPathSuggestions(prefix string) []prompt.Suggest {
+	suggestions := make([]prompt.Suggest, 0, 16)
+	for _, entry := range SchemaTree.Dir {
+		suggestions = append(suggestions, findMatchedXPATH(entry, prefix, false)...)
+	}
+	sort.Slice(suggestions, func(i, j int) bool {
+		if suggestions[i].Text == suggestions[j].Text {
+			return suggestions[i].Description < suggestions[j].Description
+		}
+		return suggestions[i].Text < suggestions[j].Text
+	})
+
+	return prompt.FilterHasPrefix(suggestions, prefix, true)
+}
+
+func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []prompt.Suggest {
+	if strings.HasPrefix(input, ":") {
+		return nil
+	}
+	suggestions := make([]prompt.Suggest, 0, 4)
+	inputLen := len(input)
+	for i, c := range input {
+		if c == ':' && i+1 < inputLen {
+			input = input[i+1:]
+			inputLen -= (i + 1)
+			break
+		}
+	}
+
+	for name, child := range entry.Dir {
+		if child.IsCase() || child.IsChoice() {
+			for _, gchild := range child.Dir {
+				suggestions = append(suggestions, findMatchedXPATH(gchild, input, prefixPresent)...)
+			}
+			continue
+		}
+		pathelem := "/" + name
+		if strings.HasPrefix(pathelem, input) {
+			node := ""
+
+			if inputLen > 0 && input[0] == '/' {
+				node = name
+			} else {
+				node = pathelem
+			}
+			suggestions = append(suggestions, prompt.Suggest{Text: node, Description: buildXPATHDescription(child)})
+			if child.Key != "" { // list
+				keylist := strings.Split(child.Key, " ")
+				for _, key := range keylist {
+					node = fmt.Sprintf("%s[%s=*]", node, key)
+				}
+				suggestions = append(suggestions, prompt.Suggest{Text: node, Description: buildXPATHDescription(child)})
+			}
+		} else if strings.HasPrefix(input, pathelem) {
+			var prevC rune
+			var bracketCount int
+			var endIndex int = -1
+			var stop bool
+			for i, c := range input {
+				switch c {
+				case '[':
+					bracketCount++
+				case ']':
+					if prevC != '\\' {
+						bracketCount--
+						endIndex = i
+					}
+				case '/':
+					if i != 0 && bracketCount == 0 {
+						endIndex = i
+						stop = true
+					}
+				}
+				if stop {
+					break
+				}
+				prevC = c
+			}
+			if bracketCount == 0 {
+				if endIndex >= 0 {
+					suggestions = append(suggestions, findMatchedXPATH(child, input[endIndex:], prefixPresent)...)
+				} else {
+					suggestions = append(suggestions, findMatchedXPATH(child, input[len(pathelem):], prefixPresent)...)
+				}
+			}
+		}
+	}
+	return suggestions
+}
+
+func buildXPATHDescription(entry *yang.Entry) string {
+	sb := strings.Builder{}
+	sb.WriteString(getDescriptionPrefix(entry))
+	sb.WriteString(" ")
+	sb.WriteString(entry.Description)
+	return sb.String()
+}
+
+func getDescriptionPrefix(entry *yang.Entry) string {
+	switch {
+	case entry.Dir == nil && entry.ListAttr != nil: // leaf-list
+		return "[⋯]"
+	case entry.Dir == nil: // leaf
+		return "   "
+	case entry.ListAttr != nil: // list
+		return "[+]"
+	default: // container
+		return "[+]"
+	}
+}
+
 func resetTerminal() {
 	var cmd *exec.Cmd
 	cmd = exec.Command("reset")
 	cmd.Stdout = os.Stdout
 	_ = cmd.Run() // 忽略错误，以防命令失败
-}
-
-// 从YANG模块结构中构建XPath建议
-func buildXPathSuggestions(input string) []prompt.Suggest {
-	var suggestions []prompt.Suggest
-
-	if input == "" {
-		input = "/"
-	}
-
-	// 确保输入以/开头
-	if !strings.HasPrefix(input, "/") {
-		input = "/" + input
-	}
-
-	// 获取所有可能的XPath
-	for _, module := range yangModules {
-		suggestions = append(suggestions, getNodePaths(module, input)...)
-	}
-
-	return suggestions
-}
-
-// 递归获取节点路径
-func getNodePaths(node *YangNode, prefix string) []prompt.Suggest {
-	var suggestions []prompt.Suggest
-
-	if node == nil {
-		return suggestions
-	}
-
-	// 跳过根模块节点
-	if node.Name == "test-module" {
-		// 遍历子节点
-		for _, child := range node.Children {
-			suggestions = append(suggestions, getChildPaths(child, "", prefix)...)
-		}
-	} else {
-		suggestions = append(suggestions, getChildPaths(node, "", prefix)...)
-	}
-
-	return suggestions
-}
-
-// 获取子节点路径
-func getChildPaths(node *YangNode, currentPath, prefix string) []prompt.Suggest {
-	var suggestions []prompt.Suggest
-
-	// 构建当前节点的完整路径
-	fullPath := currentPath
-	if currentPath == "" {
-		fullPath = "/" + node.Name
-	} else {
-		fullPath = currentPath + "/" + node.Name
-	}
-
-	// 如果当前路径匹配前缀，添加到建议列表
-	if strings.HasPrefix(fullPath, prefix) || prefix == "" {
-		suggestions = append(suggestions, prompt.Suggest{
-			Text:        fullPath,
-			Description: node.Description,
-		})
-	}
-
-	// 递归处理子节点
-	if node.Children != nil {
-		for _, child := range node.Children {
-			suggestions = append(suggestions, getChildPaths(child, fullPath, prefix)...)
-		}
-	}
-
-	return suggestions
 }
 
 // 停止订阅
