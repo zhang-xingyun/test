@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/c-bata/go-prompt"
@@ -13,26 +11,10 @@ import (
 
 var path string = "/"
 
-// 全局信号处理变量
+// 全局订阅控制变量
 var (
-	sigChan   = make(chan os.Signal, 1)
-	doneChan  = make(chan bool, 1)
+	subscribeCancel chan bool
 )
-
-// 初始化信号处理
-func init() {
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-
-	// 启动一个goroutine来处理全局信号
-	go func() {
-		sig := <-sigChan
-		fmt.Printf("\nReceived signal: %s, shutting down gracefully...\n", sig.String())
-
-		// 通知所有正在运行的操作停止
-		doneChan <- true
-		os.Exit(0)
-	}()
-}
 
 // 模拟YANG模块的结构
 type YangNode struct {
@@ -143,87 +125,100 @@ var dataTypeSuggestions = []prompt.Suggest{
 func buildXPathSuggestions(input string) []prompt.Suggest {
 	var suggestions []prompt.Suggest
 
-	// 遍历所有模块
+	if input == "" {
+		input = "/"
+	}
+
+	// 确保输入以/开头
+	if !strings.HasPrefix(input, "/") {
+		input = "/" + input
+	}
+
+	// 获取所有可能的XPath
 	for _, module := range yangModules {
-		// 从根级别开始查找匹配的节点
-		suggestions = append(suggestions, findMatchingNodes(module.Children, input)...)
+		suggestions = append(suggestions, getNodePaths(module, input)...)
 	}
 
 	return suggestions
 }
 
-// 递归查找匹配输入的节点
-func findMatchingNodes(nodes map[string]*YangNode, input string) []prompt.Suggest {
+// 递归获取节点路径
+func getNodePaths(node *YangNode, prefix string) []prompt.Suggest {
 	var suggestions []prompt.Suggest
 
-	for _, node := range nodes {
-		// 检查当前节点名称是否匹配输入
-		fullPath := "/" + node.Name
-		if strings.HasPrefix(fullPath, input) {
-			description := node.Description
-			if description == "" {
-				description = "YANG node: " + node.Name
-			}
+	if node == nil {
+		return suggestions
+	}
 
-			suggestions = append(suggestions, prompt.Suggest{
-				Text:        fullPath,
-				Description: description,
-			})
-
-			// 如果当前节点还有子节点，也考虑添加
-			if node.Children != nil && len(node.Children) > 0 {
-				// 如果输入完全匹配当前节点，还应提供子节点的建议
-				if input == "/"+node.Name || strings.HasPrefix(input, "/"+node.Name+"/") {
-					// 递归查找子节点
-					childInput := strings.TrimPrefix(input, "/"+node.Name)
-					if childInput == "" {
-						childInput = "/"
-					} else if childInput == "/" {
-						childInput = ""
-					}
-					suggestions = append(suggestions, findMatchingNodes(node.Children, childInput)...)
-				}
-			}
+	// 跳过根模块节点
+	if node.Name == "test-module" {
+		// 遍历子节点
+		for _, child := range node.Children {
+			suggestions = append(suggestions, getChildPaths(child, "", prefix)...)
 		}
+	} else {
+		suggestions = append(suggestions, getChildPaths(node, "", prefix)...)
+	}
 
-		// 如果输入是子路径的一部分，例如 "/interfaces/" 并且有子节点 "interface"
-		if strings.HasPrefix(input, "/"+node.Name+"/") && node.Children != nil {
-			childInput := strings.TrimPrefix(input, "/"+node.Name+"/")
-			suggestions = append(suggestions, findMatchingChildNodes(node.Children, childInput, "/"+node.Name)...)
+	return suggestions
+}
+
+// 获取子节点路径
+func getChildPaths(node *YangNode, currentPath, prefix string) []prompt.Suggest {
+	var suggestions []prompt.Suggest
+
+	// 构建当前节点的完整路径
+	fullPath := currentPath
+	if currentPath == "" {
+		fullPath = "/" + node.Name
+	} else {
+		fullPath = currentPath + "/" + node.Name
+	}
+
+	// 如果当前路径匹配前缀，添加到建议列表
+	if strings.HasPrefix(fullPath, prefix) || prefix == "" {
+		suggestions = append(suggestions, prompt.Suggest{
+			Text:        fullPath,
+			Description: node.Description,
+		})
+	}
+
+	// 递归处理子节点
+	if node.Children != nil {
+		for _, child := range node.Children {
+			suggestions = append(suggestions, getChildPaths(child, fullPath, prefix)...)
 		}
 	}
 
 	return suggestions
 }
 
-// 查找匹配的子节点
-func findMatchingChildNodes(nodes map[string]*YangNode, input string, parentPath string) []prompt.Suggest {
-	var suggestions []prompt.Suggest
+// 停止订阅
+func stopSubscription() {
+	if subscribeCancel != nil {
+		subscribeCancel <- true
+		close(subscribeCancel)
+		subscribeCancel = nil
+	}
+}
 
-	for _, node := range nodes {
-		fullPath := parentPath + "/" + node.Name
-		if strings.HasPrefix(node.Name, input) || strings.HasPrefix(fullPath, input) {
-			description := node.Description
-			if description == "" {
-				description = "YANG node: " + node.Name
-			}
+// 执行订阅操作
+func runSubscription(subKey string) {
+	fmt.Printf("Starting subscription for key: %s, path: %s\n", subKey, path)
 
-			suggestions = append(suggestions, prompt.Suggest{
-				Text:        fullPath,
-				Description: description,
-			})
-		}
+	// 模拟订阅
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
-		// 递归检查子节点
-		if node.Children != nil && len(node.Children) > 0 {
-			if strings.HasPrefix(input, node.Name+"/") {
-				childInput := strings.TrimPrefix(input, node.Name+"/")
-				suggestions = append(suggestions, findMatchingChildNodes(node.Children, childInput, parentPath+"/"+node.Name)...)
-			}
+	for {
+		select {
+		case <-subscribeCancel:
+			fmt.Println("Subscription stopped")
+			return
+		case <-ticker.C:
+			fmt.Printf("Received update for subscription '%s': %s\n", subKey, path)
 		}
 	}
-
-	return suggestions
 }
 
 // 执行用户输入的命令
@@ -274,33 +269,13 @@ func executor(in string) {
 			subKey = "sample"
 		}
 
-		// 创建一个信号通道用于接收中断信号
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+		// 创建新的取消通道
+		subscribeCancel = make(chan bool, 1)
 
-		// 启动一个goroutine来处理订阅逻辑
-		doneChan := make(chan bool, 1)
+		// 启动订阅（在后台运行）
+		runSubscription(subKey)
 
-		go func() {
-			for {
-				// 检查是否有退出信号
-				select {
-				case <-doneChan:
-					return
-				default:
-					// 模拟订阅操作
-					fmt.Printf("Executing gNMI SubscribeRequest for key: %s, path: %s, waiting for updates...\n", subKey, path)
-					time.Sleep(2 * time.Second) // 模拟等待消息
-				}
-			}
-		}()
-
-		// 等待系统信号
-		sig := <-sigChan
-		fmt.Printf("\nReceived signal: %s, exiting subscription...\n", sig.String())
-
-		// 发送完成信号，退出goroutine
-		doneChan <- true
+		fmt.Printf("Subscription started with key: %s\n", subKey)
 
 	default:
 		fmt.Printf("Unknown command: %s. Type 'help' for available commands.\n", cmd)
@@ -309,71 +284,85 @@ func executor(in string) {
 
 // 提供自动补全建议
 func completer(d prompt.Document) []prompt.Suggest {
-	w := d.GetWordBeforeCursor()
-
-	// 根据第一个词提供不同的补全
-	fields := strings.Fields(d.TextBeforeCursor())
-
-	// 获取完整输入并分割，但保留最后一个空格输入
 	textBeforeCursor := d.TextBeforeCursor()
-	allFields := strings.Split(textBeforeCursor, " ")
+	if strings.TrimSpace(textBeforeCursor) == "" {
+		return []prompt.Suggest{}
+	}
 
+	fields := strings.Fields(textBeforeCursor)
 	if len(fields) == 0 {
-		// 没有任何输入时，显示命令补全
-		return prompt.FilterHasPrefix(commands, w, true)
+		return prompt.FilterHasPrefix(commands, d.GetWordBeforeCursor(), true)
 	}
 
 	first := strings.ToLower(fields[0])
+	lastWord := d.GetWordBeforeCursor()
+
+	// 如果当前正在输入命令本身
+	if len(fields) == 1 && strings.HasSuffix(textBeforeCursor, " ") {
+		// 刚刚输入完命令并按下空格，根据命令提供参数建议
+		switch first {
+		case "set":
+			return prompt.FilterHasPrefix(dataTypeSuggestions, "", true)
+		case "sub":
+			return []prompt.Suggest{{Text: "sample", Description: "Default subscription key"}}
+		case "path":
+			// 对于path命令，可以提供根路径建议
+			return buildXPathSuggestions("")
+		}
+		return []prompt.Suggest{}
+	}
+
 	switch first {
 	case "get", "quit", "help":
-		// 这些命令没有参数
 		return []prompt.Suggest{}
 	case "path":
-		// 如果path命令后面有输入，则提供XPath建议
-		if len(fields) >= 1 {
-			return buildXPathSuggestions(w)
+		// 为path命令提供路径建议
+		if len(fields) > 1 {
+			// 获取当前输入的路径部分
+			pathInput := lastWord
+			if !strings.HasPrefix(pathInput, "/") && len(fields) > 1 {
+				// 如果当前单词不以/开头，可能是一个路径的部分
+				pathInput = fields[1]
+				if len(fields) > 2 && fields[len(fields)-1] != "" {
+					// 有多个路径部分，重建路径
+					pathInput = strings.Join(fields[1:], "/")
+				}
+			}
+			return buildXPathSuggestions(pathInput)
 		}
-		return []prompt.Suggest{}
+		return buildXPathSuggestions("")
 	case "set":
-		// 如果输入超过3个字段（命令+2个参数），说明已经在第三个参数之后输入了空格，不应再提示类型
-		if len(fields) >= 3 {
+		if len(fields) == 2 {
+			// 正在输入数据类型
+			return prompt.FilterHasPrefix(dataTypeSuggestions, lastWord, true)
+		} else if len(fields) == 3 {
+			// 正在输入值，不提供建议
 			return []prompt.Suggest{}
-		}
-		// 检查是否刚输入set并按下了空格，或者正在输入第一个参数（数据类型）
-		if len(allFields) == 2 && allFields[0] == "set" { // 刚输入set + 空格，等待数据类型
-			// 在这种情况下，w 是空的，所以我们要显示所有数据类型
-			return prompt.FilterHasPrefix(dataTypeSuggestions, w, true)
-		} else if len(fields) == 2 && fields[0] == "set" { // 已经输入set和数据类型，正在输入值
-			// 不再显示数据类型提示，因为用户应该输入值
-			return []prompt.Suggest{}
-		} else if len(fields) == 1 { // 只输入了set，还没按空格
-			return prompt.FilterHasPrefix(dataTypeSuggestions, w, true)
+		} else if len(fields) == 1 {
+			// 只输入了set，还没按空格
+			return prompt.FilterContains(dataTypeSuggestions, lastWord, true)
 		}
 		return []prompt.Suggest{}
 	case "sub":
-		// 如果输入超过2个字段（命令+1个参数），说明已经在第二个参数之后输入了空格，不应再提示
-		if len(allFields) >= 3 {
-			return []prompt.Suggest{}
-		}
-		// 检查是否刚输入sub并按下了空格
-		if len(allFields) == 2 && allFields[0] == "sub" && allFields[1] == "" {
-			return prompt.FilterHasPrefix([]prompt.Suggest{{Text: "sample", Description: "Default subscription key"}}, w, true)
-		}
-		// 为sub命令提供补全
 		if len(fields) == 2 {
-			return prompt.FilterHasPrefix([]prompt.Suggest{{Text: "sample", Description: "Default subscription key"}}, w, true)
+			// 输入sub命令后的参数
+			return prompt.FilterHasPrefix([]prompt.Suggest{
+				{Text: "sample", Description: "Default subscription key"},
+				{Text: "on_change", Description: "Stream subscription"},
+				{Text: "once", Description: "One-time subscription"},
+			}, lastWord, true)
 		}
 		return []prompt.Suggest{}
 	default:
-		// 如果不是已知命令，仍然提供基本命令补全
-		return prompt.FilterHasPrefix(commands, w, true)
+		// 检查是否在输入命令
+		return prompt.FilterHasPrefix(commands, lastWord, true)
 	}
 }
 
 func main() {
 	fmt.Println("Welcome to gNMI CLI! Type 'help' or 'quit'")
 
-	prompt.New(
+	p := prompt.New(
 		executor,
 		completer,
 		prompt.OptionTitle("gNMI CLI"),
@@ -383,25 +372,45 @@ func main() {
 			prompt.KeyBind{
 				Key: prompt.ControlZ,
 				Fn: func(buf *prompt.Buffer) {
-					// If the last word before the cursor does not contain a "/" return.
-					// This is needed to avoid deleting down to a previous flag value
-					if !strings.Contains(buf.Document().GetWordBeforeCursorWithSpace(), "/") {
-						return
+					// 获取光标前的单词
+					word := buf.Document().GetWordBeforeCursor()
+
+					// 如果单词包含/，则删除直到前一个/
+					if strings.Contains(word, "/") {
+						// 找到最后一个/的位置
+						lastSlash := strings.LastIndex(word, "/")
+						if lastSlash > 0 {
+							// 删除从光标位置到最后一个/之后的内容
+							toDelete := len(word) - lastSlash - 1
+							if toDelete > 0 {
+								buf.DeleteBeforeCursor(toDelete)
+							}
+						} else if lastSlash == 0 {
+							// 单词以/开头，删除/之后的所有内容
+							buf.DeleteBeforeCursor(len(word) - 1)
+						}
+					} else {
+						// 删除整个单词
+						buf.DeleteBeforeCursor(len([]rune(word)))
 					}
-					// Check if the last rune is a PathSeparator and is not the path root then delete it
-					if buf.Document().GetCharRelativeToCursor(0) == os.PathSeparator && buf.Document().GetCharRelativeToCursor(-1) != ' ' {
-						buf.DeleteBeforeCursor(1)
-					}
-					// Delete down until the next "/"
-					buf.DeleteBeforeCursor(len([]rune(buf.Document().GetWordBeforeCursorUntilSeparator("/"))))
 				},
 			},
 			prompt.KeyBind{
 				Key: prompt.ControlC,
 				Fn: func(buf *prompt.Buffer) {
-
+					// 检查是否有活跃的订阅
+					fmt.Println("ctrl+c pressed")
+					if subscribeCancel != nil {
+						stopSubscription()
+						fmt.Println("\nSubscription canceled...")
+					} else {
+						fmt.Println("\nExiting...")
+						os.Exit(0)
+					}
 				},
 			},
 		),
-	).Run()
+	)
+
+	p.Run()
 }
