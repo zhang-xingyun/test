@@ -91,14 +91,9 @@ func generateYangSchema(file string) error {
 	}
 	sort.Strings(names)
 	entries := make([]*yang.Entry, len(names))
-	var mod *yang.Entry
 	for x, n := range names {
-		mod = yang.ToEntry(mods[n])
-		for name := range mod.Dir {
-			entries[x] = mod.Dir[name]
-		}
+		entries[x] = yang.ToEntry(mods[n])
 	}
-
 	SchemaTree = buildRootEntry()
 
 	for _, entry := range entries {
@@ -158,13 +153,109 @@ func updateAnnotation(entry *yang.Entry) {
 	}
 }
 
+func findMatchedXPATH(entry *yang.Entry, input string) []prompt.Suggest {
+	if strings.HasPrefix(input, ":") {
+		return nil
+	}
+
+	suggestions := make([]prompt.Suggest, 0, 4)
+
+	for name, child := range entry.Dir {
+		if child.IsCase() || child.IsChoice() {
+			for _, gchild := range child.Dir {
+				suggestions = append(suggestions, findMatchedXPATH(gchild, input)...)
+			}
+			continue
+		}
+
+		pathelem := "/" + name
+
+		// 检查输入是否匹配当前路径元素
+		if strings.HasPrefix(pathelem, input) {
+			// 输入部分或完全匹配当前路径元素
+			suggestions = append(suggestions, prompt.Suggest{
+				Text:        pathelem,
+				Description: buildXPATHDescription(child),
+			})
+
+			// 如果是list，添加带key的版本
+			if child.Key != "" {
+				keylist := strings.Split(child.Key, " ")
+				nodeWithKey := pathelem
+				for _, key := range keylist {
+					nodeWithKey = fmt.Sprintf("%s[%s=*]", nodeWithKey, key)
+				}
+				suggestions = append(suggestions, prompt.Suggest{
+					Text:        nodeWithKey,
+					Description: buildXPATHDescription(child),
+				})
+			}
+		} else if strings.HasPrefix(input, pathelem) {
+			// 输入以当前路径元素开头，需要检查是否有括号（list keys）或继续向下搜索
+
+			// 移除已匹配的部分
+			remaining := input[len(pathelem):]
+
+			// 如果剩余部分为空，说明精确匹配到这个节点
+			if remaining == "" {
+				// 为用户提供这个节点的子节点建议
+				for childName, grandchild := range child.Dir {
+					if grandchild.IsCase() || grandchild.IsChoice() {
+						continue
+					}
+
+					childPathelem := pathelem + "/" + childName
+					suggestions = append(suggestions, prompt.Suggest{
+						Text:        childPathelem,
+						Description: buildXPATHDescription(grandchild),
+					})
+				}
+			} else {
+				// 检查是否有list key括号
+				if remaining[0] == '[' {
+					// 处理list key
+					bracketCount := 0
+					keyEnd := -1
+					for i, c := range remaining {
+						if c == '[' {
+							bracketCount++
+						} else if c == ']' {
+							bracketCount--
+							if bracketCount == 0 {
+								keyEnd = i
+								break
+							}
+						}
+					}
+
+					if keyEnd != -1 {
+						// 移除key部分，继续处理剩余路径
+						remaining = remaining[keyEnd+1:]
+					}
+				}
+
+				// 如果剩余部分以/开头，继续向下搜索
+				if strings.HasPrefix(remaining, "/") {
+					childSuggestions := findMatchedXPATH(child, remaining)
+					for _, s := range childSuggestions {
+						s.Text = pathelem + s.Text
+						suggestions = append(suggestions, s)
+					}
+				}
+			}
+		}
+	}
+
+	return suggestions
+}
+
 func buildXPathSuggestions(prefix string) []prompt.Suggest {
 	suggestions := make([]prompt.Suggest, 0, 16)
 
 	// 如果前缀为空或以/开头，从根开始搜索
 	if prefix == "" || strings.HasPrefix(prefix, "/") {
 		// 从根开始搜索
-		suggestions = append(suggestions, findMatchedXPATH(SchemaTree, prefix, false)...)
+		suggestions = append(suggestions, findMatchedXPATH(SchemaTree, prefix)...)
 	} else {
 		// 可能正在输入模块前缀，提供模块建议
 		for name, entry := range SchemaTree.Dir {
@@ -177,112 +268,15 @@ func buildXPathSuggestions(prefix string) []prompt.Suggest {
 		}
 	}
 
-	// 去重和排序
-	seen := make(map[string]bool)
-	uniqueSuggestions := make([]prompt.Suggest, 0, len(suggestions))
-	for _, s := range suggestions {
-		if !seen[s.Text] {
-			seen[s.Text] = true
-			uniqueSuggestions = append(uniqueSuggestions, s)
+	// 排序
+	sort.Slice(suggestions, func(i, j int) bool {
+		if suggestions[i].Text == suggestions[j].Text {
+			return suggestions[i].Description < suggestions[j].Description
 		}
-	}
-
-	sort.Slice(uniqueSuggestions, func(i, j int) bool {
-		if uniqueSuggestions[i].Text == uniqueSuggestions[j].Text {
-			return uniqueSuggestions[i].Description < uniqueSuggestions[j].Description
-		}
-		return uniqueSuggestions[i].Text < uniqueSuggestions[j].Text
+		return suggestions[i].Text < suggestions[j].Text
 	})
 
-	return uniqueSuggestions
-}
-
-func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []prompt.Suggest {
-	if strings.HasPrefix(input, ":") {
-		return nil
-	}
-
-	suggestions := make([]prompt.Suggest, 0, 4)
-	inputLen := len(input)
-
-	// 移除模块前缀（如果有）
-	for i, c := range input {
-		if c == ':' && i+1 < inputLen {
-			input = input[i+1:]
-			inputLen -= (i + 1)
-			break
-		}
-	}
-
-	for name, child := range entry.Dir {
-		if child.IsCase() || child.IsChoice() {
-			for _, gchild := range child.Dir {
-				suggestions = append(suggestions, findMatchedXPATH(gchild, input, prefixPresent)...)
-			}
-			continue
-		}
-
-		pathelem := "/" + name
-		if strings.HasPrefix(pathelem, input) {
-			node := ""
-			if inputLen == 0 {
-				node = pathelem
-			} else if inputLen > 0 && input[0] == '/' {
-				node = name
-			} else {
-				node = pathelem
-			}
-			suggestions = append(suggestions, prompt.Suggest{Text: node, Description: buildXPATHDescription(child)})
-
-			// 如果是list，添加带key的版本
-			if child.Key != "" {
-				keylist := strings.Split(child.Key, " ")
-				nodeWithKey := node
-				for _, key := range keylist {
-					nodeWithKey = fmt.Sprintf("%s[%s=*]", nodeWithKey, key)
-				}
-				suggestions = append(suggestions, prompt.Suggest{Text: nodeWithKey, Description: buildXPATHDescription(child) + " (with key)"})
-			}
-		} else if strings.HasPrefix(input, pathelem) {
-			var prevC rune
-			var bracketCount int
-			var endIndex int = -1
-			var stop bool
-
-			// 解析路径，正确处理括号
-			for i, c := range input {
-				switch c {
-				case '[':
-					bracketCount++
-				case ']':
-					if prevC != '\\' {
-						bracketCount--
-						endIndex = i
-					}
-				case '/':
-					if i != 0 && bracketCount == 0 {
-						endIndex = i
-						stop = true
-					}
-				}
-				if stop {
-					break
-				}
-				prevC = c
-			}
-
-			if bracketCount == 0 {
-				if endIndex >= 0 {
-					// 继续搜索剩余路径
-					suggestions = append(suggestions, findMatchedXPATH(child, input[endIndex:], prefixPresent)...)
-				} else {
-					// 已经到达路径末尾
-					suggestions = append(suggestions, findMatchedXPATH(child, input[len(pathelem):], prefixPresent)...)
-				}
-			}
-		}
-	}
-
+	// 让go-prompt自己处理过滤
 	return suggestions
 }
 
@@ -300,10 +294,8 @@ func buildXPATHDescription(entry *yang.Entry) string {
 	sb := strings.Builder{}
 	sb.WriteString(getDescriptionPrefix(entry))
 	sb.WriteString(" ")
-	sb.WriteString(getPermissions(entry))
-	sb.WriteString(" ")
 
-	// 可以添加类型信息
+	// 添加类型信息
 	if entry.Type != nil {
 		sb.WriteString(entry.Type.Kind.String())
 		sb.WriteString(", ")
@@ -311,22 +303,6 @@ func buildXPATHDescription(entry *yang.Entry) string {
 
 	sb.WriteString(entry.Description)
 	return sb.String()
-}
-
-func getPermissions(entry *yang.Entry) string {
-	if entry == nil {
-		return "(rw)"
-	}
-
-	switch entry.Config {
-	case yang.TSTrue:
-		return "(rw)"
-	case yang.TSFalse:
-		return "(ro)"
-	case yang.TSUnset:
-		return getPermissions(entry.Parent)
-	}
-	return "(rw)"
 }
 
 func getDescriptionPrefix(entry *yang.Entry) string {
@@ -483,13 +459,18 @@ func completer(d prompt.Document) []prompt.Suggest {
 		// 为path命令提供路径建议
 		if len(fields) > 1 {
 			// 获取当前输入的路径部分
-			pathInput := lastWord
-			if !strings.HasPrefix(pathInput, "/") && len(fields) > 1 {
-				// 如果当前单词不以/开头，可能是一个路径的部分
-				pathInput = fields[1]
-				if len(fields) > 2 && fields[len(fields)-1] != "" {
-					// 有多个路径部分，重建路径
-					pathInput = strings.Join(fields[1:], "/")
+			pathInput := ""
+			if len(fields) > 1 {
+				// 获取除命令外的所有内容作为路径
+				pathInput = strings.Join(fields[1:], " ")
+				// 如果最后一个字段是当前正在输入的，需要处理
+				if lastWord != fields[len(fields)-1] && strings.HasSuffix(textBeforeCursor, " ") {
+					// 光标在空格后，正在输入新内容
+					pathInput = strings.Join(fields[1:], " ")
+				} else {
+					// 正在编辑某个字段
+					pathInput = strings.Join(fields[1:len(fields)-1], " ") + " " + lastWord
+					pathInput = strings.TrimSpace(pathInput)
 				}
 			}
 			return buildXPathSuggestions(pathInput)
