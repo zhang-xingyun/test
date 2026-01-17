@@ -1,108 +1,233 @@
-module example-telemetry {
+module example-telemetry-extended {
   yang-version 1;
-  namespace "http://example.com/yang/telemetry";
-  prefix "telem";
+  namespace "http://example.com/yang/telemetry-ext";
+  prefix "telem-ext";
 
   organization "Example Inc.";
   contact "support@example.com";
   description
-    "A simple self-contained telemetry YANG model for demo.";
+    "Extended telemetry YANG model with multi-level keys and multiple keys.";
 
-  revision "2026-01-11" {
-    description "Initial revision";
+  revision "2026-01-17" {
+    description "Added multi-level keys and multiple-key lists";
   }
 
+  // ========== 示例1：多级Key（三级嵌套） ==========
   container telemetry {
-    config false; // 遥测数据通常是只读的
+    config false;
 
-    list system {
-      key "hostname";
-      description "System-level telemetry";
-
-      leaf hostname {
+    list region {
+      key "region-id";
+      description "Regional grouping - 第一级Key";
+      
+      leaf region-id {
         type string;
-        description "System hostname identifier";
+        description "Region identifier (e.g., 'us-east', 'eu-west')";
       }
-
-      leaf uptime {
-        type uint64;
-        units "seconds";
-        description "System uptime since last reboot";
-      }
-
-      leaf cpu-utilization {
-        type decimal64 {
-          fraction-digits 2;
-        }
-        units "percent";
-        description "Average CPU utilization over last 1 minute";
-      }
-    }
-
-    container sensors {
-      description "Hardware sensor readings";
-
-      container cpu {
-        description "CPU temperature sensors";
-
-        leaf temperature {
-          type int32;
-          units "Celsius";
-          description "Current CPU die temperature";
-        }
-
-        leaf max-temperature {
-          type int32;
-          units "Celsius";
-          description "Maximum recorded CPU temperature";
-        }
-      }
-
-      container memory {
-        description "Memory usage metrics";
-
-        leaf used-percent {
-          type decimal64 {
-            fraction-digits 1;
-          }
-          units "percent";
-          description "Percentage of memory in use";
-        }
-
-        leaf total-memory {
-          type uint64;
-          units "MB";
-          description "Total physical memory";
-        }
-      }
-    }
-
-    container interfaces {
-      description "Per-interface telemetry";
-
-      list interface {
-        key "name";
-        description "Telemetry for a specific interface";
-
-        leaf name {
+      
+      list datacenter {
+        key "dc-id";
+        description "Datacenter within region - 第二级Key";
+        
+        leaf dc-id {
           type string;
-          description "Interface name, e.g., 'eth0'";
+          description "Datacenter ID";
         }
+        
+        list rack {
+          key "rack-number";
+          description "Rack within datacenter - 第三级Key";
+          
+          leaf rack-number {
+            type uint16;
+            description "Rack number";
+          }
+          
+          leaf temperature {
+            type decimal64 {
+              fraction-digits 1;
+            }
+            units "Celsius";
+            description "Average rack temperature";
+          }
+          
+          leaf power-usage {
+            type uint32;
+            units "Watts";
+            description "Total power consumption";
+          }
+        }
+      }
+    }
+  }
 
-        leaf in-packets {
-          type uint64;
-          description "Number of inbound packets";
-        }
+  // ========== 示例2：单级多个Key（三个Key） ==========
+  container network {
+    config false;
+    description "Network state information";
 
-        leaf out-packets {
-          type uint64;
-          description "Number of outbound packets";
+    list connection {
+      // 三个Key的组合唯一标识一个连接
+      key "src-ip src-port dst-ip";
+      description "Network connection with multiple keys";
+      
+      leaf src-ip {
+        type string;
+        description "Source IP address";
+      }
+      
+      leaf src-port {
+        type uint16;
+        description "Source port number";
+      }
+      
+      leaf dst-ip {
+        type string;
+        description "Destination IP address";
+      }
+      
+      leaf dst-port {
+        type uint16;
+        description "Destination port number";
+      }
+      
+      leaf protocol {
+        type enumeration {
+          enum tcp;
+          enum udp;
+          enum icmp;
         }
+        description "Transport protocol";
+      }
+      
+      leaf bytes-transferred {
+        type uint64;
+        units "bytes";
+        description "Total bytes transferred";
+      }
+      
+      leaf connection-state {
+        type enumeration {
+          enum established;
+          enum time-wait;
+          enum close-wait;
+          enum syn-sent;
+          enum fin-wait;
+        }
+        description "TCP connection state";
+      }
+    }
+  }
 
-        leaf in-errors {
-          type uint32;
-          description "Inbound error count";
+  // ========== 示例3：两个Key的组合 ==========
+  container inventory {
+    config true;
+    description "Device inventory with composite key";
+
+    list device-interface {
+      // 两个Key的组合
+      key "device-name interface-name";
+      description "Device-interface mapping with two keys";
+      
+      leaf device-name {
+        type string;
+        description "Device hostname";
+      }
+      
+      leaf interface-name {
+        type string;
+        description "Interface name (e.g., GigabitEthernet0/1)";
+      }
+      
+      leaf ip-address {
+        type string;
+        description "IP address assigned to interface";
+      }
+      
+      leaf vlan {
+        type uint16 {
+          range "1..4094";
         }
+        description "VLAN ID";
+      }
+      
+      leaf admin-status {
+        type enumeration {
+          enum up;
+          enum down;
+        }
+        default "down";
+        description "Administrative status";
+      }
+    }
+  }
+
+  // ========== 示例4：四个Key的组合（最多示例） ==========
+  container security {
+    config true;
+    description "Security policies with four keys";
+
+    list firewall-rule {
+      // 四个Key的组合
+      key "zone direction protocol priority";
+      description "Firewall rule with four keys";
+      
+      leaf zone {
+        type string;
+        description "Security zone";
+      }
+      
+      leaf direction {
+        type enumeration {
+          enum ingress;
+          enum egress;
+        }
+        description "Traffic direction";
+      }
+      
+      leaf protocol {
+        type enumeration {
+          enum tcp;
+          enum udp;
+          enum icmp;
+          enum any;
+        }
+        description "IP protocol";
+      }
+      
+      leaf priority {
+        type uint32;
+        description "Rule priority (lower number = higher priority)";
+      }
+      
+      leaf action {
+        type enumeration {
+          enum permit;
+          enum deny;
+          enum reject;
+        }
+        mandatory true;
+        description "Rule action";
+      }
+      
+      leaf src-ip {
+        type string;
+        description "Source IP/CIDR";
+      }
+      
+      leaf dst-ip {
+        type string;
+        description "Destination IP/CIDR";
+      }
+      
+      leaf dst-port {
+        type uint16;
+        description "Destination port (for TCP/UDP)";
+      }
+      
+      leaf description {
+        type string;
+        description "Rule description";
       }
     }
   }
