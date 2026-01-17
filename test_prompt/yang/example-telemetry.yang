@@ -15,8 +15,14 @@ module example-telemetry {
   container telemetry {
     config false; // 遥测数据通常是只读的
 
-    container system {
+    list system {
+      key "hostname";
       description "System-level telemetry";
+
+      leaf hostname {
+        type string;
+        description "System hostname identifier";
+      }
 
       leaf uptime {
         type uint64;
