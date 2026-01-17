@@ -194,7 +194,7 @@ func buildXPathSuggestions(prefix string) []prompt.Suggest {
 		return uniqueSuggestions[i].Text < uniqueSuggestions[j].Text
 	})
 
-	return prompt.FilterHasPrefix(uniqueSuggestions, prefix, true)
+	return uniqueSuggestions
 }
 
 func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []prompt.Suggest {
@@ -203,28 +203,36 @@ func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []pro
 	}
 
 	suggestions := make([]prompt.Suggest, 0, 4)
+	inputLen := len(input)
 
 	// 移除模块前缀（如果有）
-	input = removeModulePrefix(input)
+	for i, c := range input {
+		if c == ':' && i+1 < inputLen {
+			input = input[i+1:]
+			inputLen -= (i + 1)
+			break
+		}
+	}
 
-	// 如果输入为空或为根路径，显示当前节点的所有直接子节点
-	if input == "" || input == "/" {
-		for name, child := range entry.Dir {
-			if child.IsCase() || child.IsChoice() {
-				for _, gchild := range child.Dir {
-					suggestions = append(suggestions, prompt.Suggest{
-						Text:        "/" + gchild.Name,
-						Description: buildXPATHDescription(gchild),
-					})
-				}
-				continue
+	for name, child := range entry.Dir {
+		if child.IsCase() || child.IsChoice() {
+			for _, gchild := range child.Dir {
+				suggestions = append(suggestions, findMatchedXPATH(gchild, input, prefixPresent)...)
 			}
+			continue
+		}
 
-			node := "/" + name
-			suggestions = append(suggestions, prompt.Suggest{
-				Text:        node,
-				Description: buildXPATHDescription(child),
-			})
+		pathelem := "/" + name
+		if strings.HasPrefix(pathelem, input) {
+			node := ""
+			if inputLen == 0 {
+				node = pathelem
+			} else if inputLen > 0 && input[0] == '/' {
+				node = name
+			} else {
+				node = pathelem
+			}
+			suggestions = append(suggestions, prompt.Suggest{Text: node, Description: buildXPATHDescription(child)})
 
 			// 如果是list，添加带key的版本
 			if child.Key != "" {
@@ -233,83 +241,43 @@ func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []pro
 				for _, key := range keylist {
 					nodeWithKey = fmt.Sprintf("%s[%s=*]", nodeWithKey, key)
 				}
-				suggestions = append(suggestions, prompt.Suggest{
-					Text:        nodeWithKey,
-					Description: buildXPATHDescription(child) + " (with key)",
-				})
+				suggestions = append(suggestions, prompt.Suggest{Text: nodeWithKey, Description: buildXPATHDescription(child) + " (with key)"})
 			}
-		}
-		return suggestions
-	}
+		} else if strings.HasPrefix(input, pathelem) {
+			var prevC rune
+			var bracketCount int
+			var endIndex int = -1
+			var stop bool
 
-	// 解析当前输入的路径
-	// 移除开头的斜杠（如果存在）
-	currentPath := input
-	if strings.HasPrefix(currentPath, "/") {
-		currentPath = currentPath[1:]
-	}
-
-	// 获取路径组件
-	pathComponents := strings.Split(currentPath, "/")
-	currentComponent := pathComponents[0]
-
-	// 查找匹配的子节点
-	for name, child := range entry.Dir {
-		if child.IsCase() || child.IsChoice() {
-			// 对于case/choice，检查其子节点
-			for _, gchild := range child.Dir {
-				if strings.HasPrefix(gchild.Name, currentComponent) {
-					// 构建完整路径
-					remainingPath := strings.Join(pathComponents[1:], "/")
-					if remainingPath == "" {
-						// 这是最后一个组件
-						node := "/" + name + "/" + gchild.Name
-						suggestions = append(suggestions, prompt.Suggest{
-							Text:        node,
-							Description: buildXPATHDescription(gchild),
-						})
-					} else {
-						// 继续递归查找
-						basePath := "/" + name + "/" + gchild.Name
-						childSuggestions := findMatchedXPATH(gchild, remainingPath, prefixPresent)
-						for _, s := range childSuggestions {
-							s.Text = basePath + s.Text
-							suggestions = append(suggestions, s)
-						}
+			// 解析路径，正确处理括号
+			for i, c := range input {
+				switch c {
+				case '[':
+					bracketCount++
+				case ']':
+					if prevC != '\\' {
+						bracketCount--
+						endIndex = i
+					}
+				case '/':
+					if i != 0 && bracketCount == 0 {
+						endIndex = i
+						stop = true
 					}
 				}
-			}
-			continue
-		}
-
-		if strings.HasPrefix(name, currentComponent) {
-			if len(pathComponents) == 1 {
-				// 这是最后一个组件，直接返回该节点
-				node := "/" + name
-				suggestions = append(suggestions, prompt.Suggest{
-					Text:        node,
-					Description: buildXPATHDescription(child),
-				})
-
-				// 如果是list，添加带key的版本
-				if child.Key != "" {
-					keylist := strings.Split(child.Key, " ")
-					nodeWithKey := node
-					for _, key := range keylist {
-						nodeWithKey = fmt.Sprintf("%s[%s=*]", nodeWithKey, key)
-					}
-					suggestions = append(suggestions, prompt.Suggest{
-						Text:        nodeWithKey,
-						Description: buildXPATHDescription(child) + " (with key)",
-					})
+				if stop {
+					break
 				}
-			} else {
-				// 还有更多路径组件，递归查找
-				remainingPath := strings.Join(pathComponents[1:], "/")
-				childSuggestions := findMatchedXPATH(child, remainingPath, prefixPresent)
-				for _, s := range childSuggestions {
-					s.Text = "/" + name + s.Text
-					suggestions = append(suggestions, s)
+				prevC = c
+			}
+
+			if bracketCount == 0 {
+				if endIndex >= 0 {
+					// 继续搜索剩余路径
+					suggestions = append(suggestions, findMatchedXPATH(child, input[endIndex:], prefixPresent)...)
+				} else {
+					// 已经到达路径末尾
+					suggestions = append(suggestions, findMatchedXPATH(child, input[len(pathelem):], prefixPresent)...)
 				}
 			}
 		}
@@ -332,8 +300,33 @@ func buildXPATHDescription(entry *yang.Entry) string {
 	sb := strings.Builder{}
 	sb.WriteString(getDescriptionPrefix(entry))
 	sb.WriteString(" ")
+	sb.WriteString(getPermissions(entry))
+	sb.WriteString(" ")
+
+	// 可以添加类型信息
+	if entry.Type != nil {
+		sb.WriteString(entry.Type.Kind.String())
+		sb.WriteString(", ")
+	}
+
 	sb.WriteString(entry.Description)
 	return sb.String()
+}
+
+func getPermissions(entry *yang.Entry) string {
+	if entry == nil {
+		return "(rw)"
+	}
+
+	switch entry.Config {
+	case yang.TSTrue:
+		return "(rw)"
+	case yang.TSFalse:
+		return "(ro)"
+	case yang.TSUnset:
+		return getPermissions(entry.Parent)
+	}
+	return "(rw)"
 }
 
 func getDescriptionPrefix(entry *yang.Entry) string {
