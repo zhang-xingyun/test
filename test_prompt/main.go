@@ -160,7 +160,7 @@ func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []pro
 
 	suggestions := make([]prompt.Suggest, 0, 4)
 	inputLen := len(input)
-
+	
 	// 移除模块前缀（如果有）
 	for i, c := range input {
 		if c == ':' && i+1 < inputLen {
@@ -170,87 +170,66 @@ func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []pro
 		}
 	}
 
-	// 如果输入为空，显示当前节点的子节点
-	if input == "" || input == "/" {
-		for name, child := range entry.Dir {
-			if child.IsCase() || child.IsChoice() {
-				for _, gchild := range child.Dir {
-					suggestions = append(suggestions, prompt.Suggest{
-						Text:        "/" + gchild.Name,
-						Description: buildXPATHDescription(gchild),
-					})
-				}
-				continue
-			}
-
-			suggestions = append(suggestions, prompt.Suggest{
-				Text:        "/" + name,
-				Description: buildXPATHDescription(child),
-			})
-		}
-		return suggestions
-	}
-
-	// 解析输入的路径，找到最后一个/的位置
-	lastSlashIndex := strings.LastIndex(input, "/")
-	if lastSlashIndex == -1 {
-		// 没有/，说明在根目录下搜索
-		for name, child := range entry.Dir {
-			if strings.HasPrefix("/"+name, input) {
-				suggestions = append(suggestions, prompt.Suggest{
-					Text:        "/" + name,
-					Description: buildXPATHDescription(child),
-				})
-			}
-		}
-		return suggestions
-	}
-
-	// 获取最后一个/之前的部分和当前部分
-	basePath := input[:lastSlashIndex]
-	currentPart := input[lastSlashIndex+1:]
-
-	// 找到basePath对应的节点
-	targetEntry := findEntryByPath(entry, basePath)
-	if targetEntry == nil {
-		return suggestions
-	}
-
-	// 显示targetEntry的子节点中匹配currentPart的节点
-	for name, child := range targetEntry.Dir {
+	prependOrigin := true // 相当于gApp.Config.LocalFlags.PromptSuggestWithOrigin
+	for name, child := range entry.Dir {
 		if child.IsCase() || child.IsChoice() {
 			for _, gchild := range child.Dir {
-				if strings.HasPrefix(gchild.Name, currentPart) {
-					suggestions = append(suggestions, prompt.Suggest{
-						Text:        gchild.Name,
-						Description: buildXPATHDescription(gchild),
-					})
-				}
+				suggestions = append(suggestions, findMatchedXPATH(gchild, input, prefixPresent)...)
 			}
 			continue
 		}
-
-		if strings.HasPrefix(name, currentPart) {
-			suggestions = append(suggestions, prompt.Suggest{
-				Text:        name,
-				Description: buildXPATHDescription(child),
-			})
-
-			// 如果是list，添加带key的版本
-			if child.Key != "" {
+		pathelem := "/" + name
+		if strings.HasPrefix(pathelem, input) {
+			node := ""
+			if inputLen == 0 && prependOrigin && entry.Name != "root" {
+				node = fmt.Sprintf("%s:/%s", entry.Name, name)
+			} else if inputLen > 0 && input[0] == '/' {
+				node = name
+			} else {
+				node = pathelem
+			}
+			suggestions = append(suggestions, prompt.Suggest{Text: node, Description: buildXPATHDescription(child)})
+			if child.Key != "" { // list
 				keylist := strings.Split(child.Key, " ")
-				nodeWithKey := name
 				for _, key := range keylist {
-					nodeWithKey = fmt.Sprintf("%s[%s=*]", nodeWithKey, key)
+					node = fmt.Sprintf("%s[%s=*]", node, key)
 				}
-				suggestions = append(suggestions, prompt.Suggest{
-					Text:        nodeWithKey,
-					Description: buildXPATHDescription(child),
-				})
+				suggestions = append(suggestions, prompt.Suggest{Text: node, Description: buildXPATHDescription(child)})
+			}
+		} else if strings.HasPrefix(input, pathelem) {
+			var prevC rune
+			var bracketCount int
+			var endIndex int = -1
+			var stop bool
+			for i, c := range input {
+				switch c {
+				case '[':
+					bracketCount++
+				case ']':
+					if prevC != '\\' {
+						bracketCount--
+						endIndex = i
+					}
+				case '/':
+					if i != 0 && bracketCount == 0 {
+						endIndex = i
+						stop = true
+					}
+				}
+				if stop {
+					break
+				}
+				prevC = c
+			}
+			if bracketCount == 0 {
+				if endIndex >= 0 {
+					suggestions = append(suggestions, findMatchedXPATH(child, input[endIndex:], prefixPresent)...)
+				} else {
+					suggestions = append(suggestions, findMatchedXPATH(child, input[len(pathelem):], prefixPresent)...)
+				}
 			}
 		}
 	}
-
 	return suggestions
 }
 
@@ -514,17 +493,23 @@ func completer(d prompt.Document) []prompt.Suggest {
 		return []prompt.Suggest{}
 	case "path":
 		// 为path命令提供路径建议
-		if len(fields) > 1 {
-			// 获取完整的路径输入
-			pathInput := strings.Join(fields[1:], " ")
-			// 如果最后一个词是当前正在输入的，且不是以空格结束
-			if lastWord != "" && !strings.HasSuffix(textBeforeCursor, " ") {
-				// 处理部分输入的情况
-				if len(fields) > 2 {
-					pathInput = strings.Join(fields[1:len(fields)-1], " ") + " " + lastWord
-				}
+		// 修复：正确处理路径补全，避免覆盖前面的部分
+		if len(fields) >= 1 {
+			// 获取当前正在编辑的路径部分
+			currentLine := d.CurrentLine()
+			cursorPosition := d.CursorPositionCol()
+			
+			// 提取光标前的文本并找到最后一个空格的位置
+			beforeCursor := currentLine[:cursorPosition]
+			
+			// 找到命令和参数之间的分隔
+			spaceIdx := strings.Index(beforeCursor, " ")
+			if spaceIdx != -1 {
+				pathInput := beforeCursor[spaceIdx+1:] // 获取路径部分
+				return buildXPathSuggestions(pathInput)
 			}
-			return buildXPathSuggestions(strings.TrimSpace(pathInput))
+			
+			return []prompt.Suggest{}
 		}
 		return buildXPathSuggestions("")
 	case "set":
