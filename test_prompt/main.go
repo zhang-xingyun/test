@@ -95,12 +95,8 @@ func generateYangSchema(file string) error {
 	}
 	sort.Strings(names)
 	entries := make([]*yang.Entry, len(names))
-	var mod *yang.Entry
 	for x, n := range names {
-		mod = yang.ToEntry(mods[n])
-		for name := range mod.Dir {
-			entries[x] = mod.Dir[name]
-		}
+		entries[x] = yang.ToEntry(mods[n])
 	}
 
 	SchemaTree = buildRootEntry()
@@ -138,17 +134,6 @@ func findXPathSuggestions(doc prompt.Document) []prompt.Suggest {
 		}
 		return suggestions[i].Text < suggestions[j].Text
 	})
-
-	// Write suggestions to a file
-	file, err := os.Create("suggestions_output.txt")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-	} else {
-		for _, suggestion := range suggestions {
-			fmt.Fprintf(file, "%s: %s\n", suggestion.Text, suggestion.Description)
-		}
-		file.Close()
-	}
 
 	return suggestions
 }
