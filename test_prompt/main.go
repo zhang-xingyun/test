@@ -55,6 +55,10 @@ func printSchemaTree(entry *yang.Entry, indent string) {
 	}
 }
 
+func help(buf *prompt.Buffer) {
+	fmt.Println("Available commands:")
+}
+
 // 在init函数中添加（用于调试）
 func init() {
 	generateYangSchema("yang/example-telemetry.yang")
@@ -91,9 +95,14 @@ func generateYangSchema(file string) error {
 	}
 	sort.Strings(names)
 	entries := make([]*yang.Entry, len(names))
+	var mod *yang.Entry
 	for x, n := range names {
-		entries[x] = yang.ToEntry(mods[n])
+		mod = yang.ToEntry(mods[n])
+		for name := range mod.Dir {
+			entries[x] = mod.Dir[name]
+		}
 	}
+
 	SchemaTree = buildRootEntry()
 
 	for _, entry := range entries {
@@ -113,6 +122,35 @@ func buildRootEntry() *yang.Entry {
 			"root":       true,
 		},
 	}
+}
+
+func findXPathSuggestions(doc prompt.Document) []prompt.Suggest {
+	word := doc.GetWordBeforeCursor()
+	suggestions := make([]prompt.Suggest, 0, 16)
+	// generate suggestions from yang schema
+	for _, entry := range SchemaTree.Dir {
+		suggestions = append(suggestions, findMatchedXPATH(entry, word, false)...)
+	}
+
+	sort.Slice(suggestions, func(i, j int) bool {
+		if suggestions[i].Text == suggestions[j].Text {
+			return suggestions[i].Description < suggestions[j].Description
+		}
+		return suggestions[i].Text < suggestions[j].Text
+	})
+
+	// Write suggestions to a file
+	file, err := os.Create("suggestions_output.txt")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+	} else {
+		for _, suggestion := range suggestions {
+			fmt.Fprintf(file, "%s: %s\n", suggestion.Text, suggestion.Description)
+		}
+		file.Close()
+	}
+
+	return suggestions
 }
 
 // updateAnnotation updates the schema info before encoding.
@@ -157,11 +195,8 @@ func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []pro
 	if strings.HasPrefix(input, ":") {
 		return nil
 	}
-
 	suggestions := make([]prompt.Suggest, 0, 4)
 	inputLen := len(input)
-	
-	// 移除模块前缀（如果有）
 	for i, c := range input {
 		if c == ':' && i+1 < inputLen {
 			input = input[i+1:]
@@ -170,7 +205,7 @@ func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []pro
 		}
 	}
 
-	prependOrigin := true // 相当于gApp.Config.LocalFlags.PromptSuggestWithOrigin
+	prependOrigin := false
 	for name, child := range entry.Dir {
 		if child.IsCase() || child.IsChoice() {
 			for _, gchild := range child.Dir {
@@ -181,7 +216,7 @@ func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []pro
 		pathelem := "/" + name
 		if strings.HasPrefix(pathelem, input) {
 			node := ""
-			if inputLen == 0 && prependOrigin && entry.Name != "root" {
+			if inputLen == 0 && prependOrigin {
 				node = fmt.Sprintf("%s:/%s", entry.Name, name)
 			} else if inputLen > 0 && input[0] == '/' {
 				node = name
@@ -233,110 +268,15 @@ func findMatchedXPATH(entry *yang.Entry, input string, prefixPresent bool) []pro
 	return suggestions
 }
 
-// 辅助函数：根据路径找到对应的Entry
-func findEntryByPath(entry *yang.Entry, path string) *yang.Entry {
-	if path == "" || path == "/" {
-		return entry
-	}
-
-	// 移除开头的/
-	if strings.HasPrefix(path, "/") {
-		path = path[1:]
-	}
-
-	components := strings.Split(path, "/")
-	currentEntry := entry
-
-	for _, component := range components {
-		if component == "" {
-			continue
-		}
-
-		// 处理list key（如interface[name=*]）
-		bracketIndex := strings.Index(component, "[")
-		if bracketIndex != -1 {
-			component = component[:bracketIndex]
-		}
-
-		found := false
-		for name, child := range currentEntry.Dir {
-			if child.IsCase() || child.IsChoice() {
-				for _, gchild := range child.Dir {
-					if gchild.Name == component {
-						currentEntry = gchild
-						found = true
-						break
-					}
-				}
-				if found {
-					break
-				}
-			} else if name == component {
-				currentEntry = child
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			return nil
-		}
-	}
-
-	return currentEntry
-}
-
-func buildXPathSuggestions(prefix string) []prompt.Suggest {
-	suggestions := make([]prompt.Suggest, 0, 16)
-
-	// 如果前缀为空或以/开头，从根开始搜索
-	if prefix == "" || strings.HasPrefix(prefix, "/") {
-		// 从根开始搜索
-		suggestions = append(suggestions, findMatchedXPATH(SchemaTree, prefix, false)...)
-	} else {
-		// 可能正在输入模块前缀，提供模块建议
-		for name, entry := range SchemaTree.Dir {
-			if strings.HasPrefix(name, prefix) {
-				suggestions = append(suggestions, prompt.Suggest{
-					Text:        name + ":",
-					Description: entry.Description,
-				})
-			}
-		}
-	}
-
-	// 排序
-	sort.Slice(suggestions, func(i, j int) bool {
-		if suggestions[i].Text == suggestions[j].Text {
-			return suggestions[i].Description < suggestions[j].Description
-		}
-		return suggestions[i].Text < suggestions[j].Text
-	})
-
-	return suggestions
-}
-
-// 辅助函数：移除模块前缀
-func removeModulePrefix(input string) string {
-	// 查找冒号位置
-	colonPos := strings.Index(input, ":")
-	if colonPos > 0 && colonPos < len(input)-1 && input[colonPos+1] == '/' {
-		return input[colonPos+1:]
-	}
-	return input
-}
-
 func buildXPATHDescription(entry *yang.Entry) string {
 	sb := strings.Builder{}
 	sb.WriteString(getDescriptionPrefix(entry))
 	sb.WriteString(" ")
 
-	// 添加类型信息
 	if entry.Type != nil {
 		sb.WriteString(entry.Type.Kind.String())
 		sb.WriteString(", ")
 	}
-
 	sb.WriteString(entry.Description)
 	return sb.String()
 }
@@ -483,7 +423,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 			return prompt.FilterHasPrefix(subscriptionTypeSuggestions, "", true)
 		case "path":
 			// 对于path命令，可以提供根路径建议
-			return buildXPathSuggestions("")
+			return findXPathSuggestions(d)
 		}
 		return []prompt.Suggest{}
 	}
@@ -492,26 +432,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 	case "get", "quit", "help":
 		return []prompt.Suggest{}
 	case "path":
-		// 为path命令提供路径建议
-		// 修复：正确处理路径补全，避免覆盖前面的部分
-		if len(fields) >= 1 {
-			// 获取当前正在编辑的路径部分
-			currentLine := d.CurrentLine()
-			cursorPosition := d.CursorPositionCol()
-			
-			// 提取光标前的文本并找到最后一个空格的位置
-			beforeCursor := currentLine[:cursorPosition]
-			
-			// 找到命令和参数之间的分隔
-			spaceIdx := strings.Index(beforeCursor, " ")
-			if spaceIdx != -1 {
-				pathInput := beforeCursor[spaceIdx+1:] // 获取路径部分
-				return buildXPathSuggestions(pathInput)
-			}
-			
-			return []prompt.Suggest{}
-		}
-		return buildXPathSuggestions("")
+		return findXPathSuggestions(d)
 	case "set":
 		if len(allFields) >= 3 {
 			return []prompt.Suggest{}
@@ -551,31 +472,38 @@ func main() {
 		prompt.OptionTitle("gNMI CLI"),
 		prompt.OptionPrefix("gNMI> "),
 		prompt.OptionHistory([]string{"help", "get", "path"}),
+		prompt.OptionAddASCIICodeBind(
+			// bind '?' character to show cmd args
+			prompt.ASCIICodeBind{
+				ASCIICode: []byte{0x3f},
+				Fn:        help,
+			},
+			// bind OS X Option+Left key binding
+			prompt.ASCIICodeBind{
+				ASCIICode: []byte{0x1b, 0x62},
+				Fn:        prompt.GoLeftWord,
+			},
+			// bind OS X Option+Right key binding
+			prompt.ASCIICodeBind{
+				ASCIICode: []byte{0x1b, 0x66},
+				Fn:        prompt.GoRightWord,
+			},
+		),
 		prompt.OptionAddKeyBind(
 			prompt.KeyBind{
 				Key: prompt.ControlZ,
 				Fn: func(buf *prompt.Buffer) {
-					// 获取光标前的单词
-					word := buf.Document().GetWordBeforeCursor()
-
-					// 如果单词包含/，则删除直到前一个/
-					if strings.Contains(word, "/") {
-						// 找到最后一个/的位置
-						lastSlash := strings.LastIndex(word, "/")
-						if lastSlash > 0 {
-							// 删除从光标位置到最后一个/之后的内容
-							toDelete := len(word) - lastSlash - 1
-							if toDelete > 0 {
-								buf.DeleteBeforeCursor(toDelete)
-							}
-						} else if lastSlash == 0 {
-							// 单词以/开头，删除/之后的所有内容
-							buf.DeleteBeforeCursor(len(word) - 1)
-						}
-					} else {
-						// 删除整个单词
-						buf.DeleteBeforeCursor(len([]rune(word)))
+					// If the last word before the cursor does not contain a "/" return.
+					// This is needed to avoid deleting down to a previous flag value
+					if !strings.Contains(buf.Document().GetWordBeforeCursorWithSpace(), "/") {
+						return
 					}
+					// Check if the last rune is a PathSeparator and is not the path root then delete it
+					if buf.Document().GetCharRelativeToCursor(0) == os.PathSeparator && buf.Document().GetCharRelativeToCursor(-1) != ' ' {
+						buf.DeleteBeforeCursor(1)
+					}
+					// Delete down until the next "/"
+					buf.DeleteBeforeCursor(len([]rune(buf.Document().GetWordBeforeCursorUntilSeparator("/"))))
 				},
 			},
 			prompt.KeyBind{
@@ -593,6 +521,8 @@ func main() {
 				},
 			},
 		),
+		prompt.OptionCompletionWordSeparator(string([]byte{' ', os.PathSeparator})),
+		prompt.OptionShowCompletionAtStart(),
 	)
 
 	p.Run()
